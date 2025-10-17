@@ -1,0 +1,5 @@
+{
+  "name": "GACCHANKO",
+  "description": "A client-side file merging tool to compare and enrich customer contract CSV files with data from another CSV or XLSX file, generating a new downloadable file with additional information.",
+  "requestFramePermissions": []
+}
