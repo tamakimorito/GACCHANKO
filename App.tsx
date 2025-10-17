@@ -1,12 +1,13 @@
-import React, { useState, useCallback, useMemo } from 'react';
 
-// External library declarations (loaded from CDN)
-declare const Papa: any;
-declare const XLSX: any;
+import React, { useState, useCallback, useMemo, useRef } from 'react';
+import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 
 // ========= TYPE DEFINITIONS =========
 type DataRow = { [key: string]: string };
-type CustomerDataMap = Map<string, DataRow>;
+// FIX: Changed _jirife and _smayell to be string literals to conform to the DataRow index signature.
+type AggregatedRow = DataRow & { _jirife: '0' | '1'; _smayell: '0' | '1'; };
+type CustomerDataMap = Map<string, AggregatedRow>;
 type ValidationResult = { valid: boolean; message: string; missingHeaders?: string[] };
 type ConflictError = { key: string; conflicts: { header: string; values: Set<string> }[] };
 type ProcessingErrors = {
@@ -29,6 +30,9 @@ const NEW_COLUMN_HEADERS = ['販路', 'オーソリー結果', 'ジライフ安�
 
 
 // ========= UTILITY FUNCTIONS =========
+const normHeaderForValidation = (s: string): string =>
+    (s ?? '').replace(/^\uFEFF/, '').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
+
 const normalizeHeader = (header: string): string => {
     if (!header) return '';
     return header.trim().toLowerCase();
@@ -50,9 +54,9 @@ const parseOptions = (opString: string | null | undefined): { jirife: 0 | 1; sma
     const normalized = opString.normalize('NFKC');
 
     // Regex to find the term if it's NOT followed by (0) or （0）
-    const jirifeRegex = /ジライフ安心サポート(?!\s*[(（]0[)）])/;
-    // For Sma-yell, also ignore case and various separators
-    const smayellRegex = /Sma[\s_\-－‐ー―]*yell(?!\s*[(（]0[)）])/i;
+    const jirifeRegex = /ジライフ安心サポート(?!\s*[(（]0[)）])/i;
+    // For Sma-yell, also ignore case and various separators, more robustly.
+    const smayellRegex = /s\s*m\s*a[\s_\-－‐ー―]*y\s*e\s*l\s*l(?!\s*[(（]0[)）])/i;
 
     return {
         jirife: jirifeRegex.test(normalized) ? 1 : 0,
@@ -99,6 +103,15 @@ interface FileDropzoneProps {
 
 const FileDropzone: React.FC<FileDropzoneProps> = ({ title, acceptedFormats, onFileSelect, fileState }) => {
     const [isDragging, setIsDragging] = useState(false);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const inputId = useMemo(
+      () => ('upload-' + title)
+            .normalize('NFKC')
+            .replace(/\s+/g,'-')
+            .replace(/[^A-Za-z0-9\-_.:]/g,''),
+      [title]
+    );
 
     const handleDrag = (e: React.DragEvent<HTMLLabelElement>, enter: boolean) => {
         e.preventDefault();
@@ -132,7 +145,8 @@ const FileDropzone: React.FC<FileDropzoneProps> = ({ title, acceptedFormats, onF
         <div className="w-full bg-white p-6 rounded-lg shadow-sm border border-gray-200">
             <h2 className="text-lg font-semibold text-gray-800 text-center mb-4">{title}</h2>
             <label
-                htmlFor={`upload-${title}`}
+                htmlFor={inputId}
+                onClick={() => inputRef.current?.click()}
                 className={`relative flex flex-col items-center justify-center w-full h-48 border-2 border-dashed ${borderColor} rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors duration-200 focus-within:border-[#5aa62b] focus-within:ring-2 focus-within:ring-[#5aa62b]/50`}
                 onDragEnter={(e) => handleDrag(e, true)}
                 onDragLeave={(e) => handleDrag(e, false)}
@@ -153,7 +167,7 @@ const FileDropzone: React.FC<FileDropzoneProps> = ({ title, acceptedFormats, onF
                         </>
                     )}
                 </div>
-                <input id={`upload-${title}`} type="file" className="sr-only" accept={acceptedFormats} onChange={handleFileChange} />
+                <input ref={inputRef} id={inputId} type="file" className="sr-only" accept={acceptedFormats} onChange={handleFileChange} />
             </label>
             {fileState.validation && (
                 <div className={`mt-3 p-3 rounded-md text-sm ${fileState.validation.valid ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
@@ -181,18 +195,26 @@ export default function App() {
     const [isLoading, setIsLoading] = useState(false);
     const [resultData, setResultData] = useState<DataRow[] | null>(null);
 
-    const resetState = () => {
+    const resetState = useCallback(() => {
         setResultData(null);
         setErrors({ contractFile: null, dataFile: null, unmatched: [], conflicts: [] });
-    };
+    }, []);
     
-    const handleFileParse = <T,>(file: File, requiredHeaders: string[], setState: React.Dispatch<React.SetStateAction<FileState>>) => {
+    const handleFileParse = useCallback((file: File, requiredHeaders: string[], setState: React.Dispatch<React.SetStateAction<FileState>>, isContractFile = false) => {
         const fileExtension = file.name.split('.').pop()?.toLowerCase();
         
-        const processData = (parsedData: any[]) => {
+        const processData = (parsedData: DataRow[]) => {
             const headers = parsedData.length > 0 ? Object.keys(parsedData[0]) : [];
-            const normalizedHeaders = headers.map(normalizeHeader);
-            const missingHeaders = requiredHeaders.filter(rh => !normalizedHeaders.includes(normalizeHeader(rh)));
+            let missingHeaders: string[];
+
+            if (isContractFile) {
+                const contractIdCanonical = '契約ID';
+                const hasContractId = headers.some(h => normHeaderForValidation(h) === normHeaderForValidation(contractIdCanonical));
+                missingHeaders = hasContractId ? [] : [`${contractIdCanonical}（BOM/全角/空白の可能性あり）`];
+            } else {
+                const normalizedHeaders = headers.map(normalizeHeader);
+                missingHeaders = requiredHeaders.filter(rh => !normalizedHeaders.includes(normalizeHeader(rh)));
+            }
 
             if (missingHeaders.length > 0) {
                 setState({ file, data: null, headers: null, validation: { valid: false, message: '必須ヘッダーが不足しています', missingHeaders } });
@@ -205,6 +227,7 @@ export default function App() {
             Papa.parse(file, {
                 header: true,
                 skipEmptyLines: true,
+                encoding: "Shift-JIS",
                 complete: (results: { data: DataRow[] }) => processData(results.data),
                 error: (err: any) => setState({ file, data: null, headers: null, validation: { valid: false, message: `CSV解析エラー: ${err.message}` } })
             });
@@ -226,17 +249,17 @@ export default function App() {
         } else {
             setState({ file, data: null, headers: null, validation: { valid: false, message: '無効なファイル形式です' } });
         }
-    };
+    }, []);
     
     const handleContractFileSelect = useCallback((file: File) => {
         resetState();
-        handleFileParse(file, REQUIRED_CONTRACT_HEADERS, setContractFileState);
-    }, []);
+        handleFileParse(file, REQUIRED_CONTRACT_HEADERS, setContractFileState, true);
+    }, [resetState, handleFileParse]);
 
     const handleDataFileSelect = useCallback((file: File) => {
         resetState();
         handleFileParse(file, REQUIRED_DATA_HEADERS, setDataFileState);
-    }, []);
+    }, [resetState, handleFileParse]);
 
     const handleGenerate = () => {
         if (!contractFileState.data || !dataFileState.data) {
@@ -252,15 +275,20 @@ export default function App() {
             const keiyakuNoHeader = dataHeaderMap.get(normalizeHeader('KeiyakuNO'))!;
             const kakutokuHeader = dataHeaderMap.get(normalizeHeader('KakutokuBashoName'))!;
             const authorityHeader = dataHeaderMap.get(normalizeHeader('Authority'))!;
+            const opHeader = dataHeaderMap.get(normalizeHeader('ShouhinName_OP'))!;
 
             for (const row of dataFileState.data!) {
                 const key = normalizeKey(row[keiyakuNoHeader]);
                 if (!key) continue;
 
+                const opOptions = parseOptions(row[opHeader]);
+
                 if (!dataMap.has(key)) {
-                    dataMap.set(key, row);
+                    // FIX: Convert numeric _jirife and _smayell to string to match AggregatedRow type.
+                    dataMap.set(key, { ...row, _jirife: String(opOptions.jirife) as '0' | '1', _smayell: String(opOptions.smayell) as '0' | '1' });
                 } else {
                     const existingRow = dataMap.get(key)!;
+                    
                     const checkConflict = (header: string) => {
                         const existingValue = existingRow[header]?.trim();
                         const newValue = row[header]?.trim();
@@ -281,25 +309,28 @@ export default function App() {
                     };
                     checkConflict(kakutokuHeader);
                     checkConflict(authorityHeader);
+
+                    // FIX: Assign string '1' instead of number 1.
+                    if (opOptions.jirife === 1) existingRow._jirife = '1';
+                    if (opOptions.smayell === 1) existingRow._smayell = '1';
                 }
             }
 
             localErrors.conflicts = Array.from(keyConflicts.entries()).map(([key, conflicts]) => ({ key, conflicts }));
             const newResultData: DataRow[] = [];
-            const contractIdHeader = contractFileState.headers!.find(h => normalizeHeader(h) === normalizeHeader('契約ID'))!;
+            const contractIdHeader = contractFileState.headers!.find(h => normHeaderForValidation(h) === normHeaderForValidation('契約ID'))!;
 
             for (const contractRow of contractFileState.data!) {
                 const key = normalizeKey(contractRow[contractIdHeader]);
                 const dataRow = dataMap.get(key);
 
                 if (dataRow) {
-                    const opOptions = parseOptions(dataRow[dataHeaderMap.get(normalizeHeader('ShouhinName_OP'))!]);
                     newResultData.push({
                         ...contractRow,
                         [NEW_COLUMN_HEADERS[0]]: dataRow[kakutokuHeader] || '',
                         [NEW_COLUMN_HEADERS[1]]: dataRow[authorityHeader] || '',
-                        [NEW_COLUMN_HEADERS[2]]: String(opOptions.jirife),
-                        [NEW_COLUMN_HEADERS[3]]: String(opOptions.smayell),
+                        [NEW_COLUMN_HEADERS[2]]: String(dataRow._jirife),
+                        [NEW_COLUMN_HEADERS[3]]: String(dataRow._smayell),
                     });
                 } else {
                     if(key) localErrors.unmatched.push(contractRow[contractIdHeader]);
@@ -383,15 +414,15 @@ export default function App() {
             <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center h-16">
                     <h1 className="font-bangers text-3xl text-gray-800 tracking-wide">GACCHANKO</h1>
-                    <span className="text-sm font-semibold text-gray-500 bg-gray-100 px-2 py-1 rounded-md">v1.01</span>
+                    <span className="text-sm font-semibold text-gray-500 bg-gray-100 px-2 py-1 rounded-md">v1.05</span>
                 </div>
             </header>
 
             <main className="flex-grow container mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
                 <div className="max-w-5xl mx-auto">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-                        <FileDropzone title="1. 顧客契約CSV" acceptedFormats=".csv" onFileSelect={handleContractFileSelect} fileState={contractFileState} />
-                        <FileDropzone title="2. 顧客契約データ" acceptedFormats=".csv,.xlsx" onFileSelect={handleDataFileSelect} fileState={dataFileState} />
+                        <FileDropzone title="1. 顧客契約CSV" acceptedFormats=".csv,text/csv,application/vnd.ms-excel" onFileSelect={handleContractFileSelect} fileState={contractFileState} />
+                        <FileDropzone title="2. 顧客契約データ" acceptedFormats=".csv,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onFileSelect={handleDataFileSelect} fileState={dataFileState} />
                     </div>
 
                     <div className="text-center">
