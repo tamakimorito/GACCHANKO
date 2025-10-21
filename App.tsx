@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -26,7 +27,7 @@ type FileState = {
 // ========= CONSTANTS =========
 const REQUIRED_CONTRACT_HEADERS = ['契約ID'];
 const REQUIRED_DATA_HEADERS = ['KeiyakuNO', 'KakutokuBashoName', 'ShouhinName_OP', 'Authority'];
-const NEW_COLUMN_HEADERS = ['販路', 'オーソリー結果', 'ジライフ安心サポート', 'Sma-yell'];
+const NEW_COLUMN_HEADERS = ['販路', 'オーソリー結果', 'ジライフ安心サポート', 'Sma-yell', '承認ID'];
 
 
 // ========= UTILITY FUNCTIONS =========
@@ -276,6 +277,7 @@ export default function App() {
             const kakutokuHeader = dataHeaderMap.get(normalizeHeader('KakutokuBashoName'))!;
             const authorityHeader = dataHeaderMap.get(normalizeHeader('Authority'))!;
             const opHeader = dataHeaderMap.get(normalizeHeader('ShouhinName_OP'))!;
+            const shouninHeader = dataHeaderMap.get(normalizeHeader('ShouninIDZeus')) || null;
 
             for (const row of dataFileState.data!) {
                 const key = normalizeKey(row[keiyakuNoHeader]);
@@ -290,8 +292,10 @@ export default function App() {
                     const existingRow = dataMap.get(key)!;
                     
                     const checkConflict = (header: string) => {
-                        const existingValue = existingRow[header]?.trim();
-                        const newValue = row[header]?.trim();
+                        // FIX: Cast row values to string before calling trim, as they may be numbers or other types from XLSX parsing.
+                        const existingValue = String(existingRow[header] ?? '').trim();
+                        // FIX: Cast row values to string before calling trim, as they may be numbers or other types from XLSX parsing.
+                        const newValue = String(row[header] ?? '').trim();
                         if (newValue && existingValue && newValue !== existingValue) {
                             let conflicts = keyConflicts.get(key) || [];
                             let headerConflict = conflicts.find(c => c.header === header);
@@ -303,12 +307,14 @@ export default function App() {
                             keyConflicts.set(key, conflicts);
                         }
                         if (!existingValue && newValue) {
-                            existingRow[header] = row[header];
+                            // FIX: Ensure value is a string before assignment.
+                            existingRow[header] = String(row[header] ?? '');
                             dataMap.set(key, existingRow);
                         }
                     };
                     checkConflict(kakutokuHeader);
                     checkConflict(authorityHeader);
+                    if (shouninHeader) checkConflict(shouninHeader);
 
                     // FIX: Assign string '1' instead of number 1.
                     if (opOptions.jirife === 1) existingRow._jirife = '1';
@@ -327,10 +333,14 @@ export default function App() {
                 if (dataRow) {
                     newResultData.push({
                         ...contractRow,
-                        [NEW_COLUMN_HEADERS[0]]: dataRow[kakutokuHeader] || '',
-                        [NEW_COLUMN_HEADERS[1]]: dataRow[authorityHeader] || '',
+                        // FIX: Ensure value is a string as it may be a different type from the file parser.
+                        [NEW_COLUMN_HEADERS[0]]: String(dataRow[kakutokuHeader] ?? ''),
+                        // FIX: Ensure value is a string as it may be a different type from the file parser.
+                        [NEW_COLUMN_HEADERS[1]]: String(dataRow[authorityHeader] ?? ''),
                         [NEW_COLUMN_HEADERS[2]]: String(dataRow._jirife),
                         [NEW_COLUMN_HEADERS[3]]: String(dataRow._smayell),
+                        // FIX: Ensure value is a string before calling .trim() as it might be a number or other type.
+                        [NEW_COLUMN_HEADERS[4]]: (shouninHeader && (String(dataRow[shouninHeader] ?? '').trim())) || 'ERROR',
                     });
                 } else {
                     if(key) localErrors.unmatched.push(contractRow[contractIdHeader]);
@@ -340,6 +350,7 @@ export default function App() {
                         [NEW_COLUMN_HEADERS[1]]: '',
                         [NEW_COLUMN_HEADERS[2]]: '0',
                         [NEW_COLUMN_HEADERS[3]]: '0',
+                        [NEW_COLUMN_HEADERS[4]]: 'ERROR',
                     });
                 }
             }
@@ -414,15 +425,15 @@ export default function App() {
             <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center h-16">
                     <h1 className="font-bangers text-3xl text-gray-800 tracking-wide">GACCHANKO</h1>
-                    <span className="text-sm font-semibold text-gray-500 bg-gray-100 px-2 py-1 rounded-md">v1.05</span>
+                    <span className="text-sm font-semibold text-gray-500 bg-gray-100 px-2 py-1 rounded-md">v1.06</span>
                 </div>
             </header>
 
             <main className="flex-grow container mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
                 <div className="max-w-5xl mx-auto">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-                        <FileDropzone title="1. 顧客契約CSV" acceptedFormats=".csv,text/csv,application/vnd.ms-excel" onFileSelect={handleContractFileSelect} fileState={contractFileState} />
-                        <FileDropzone title="2. 顧客契約データ" acceptedFormats=".csv,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onFileSelect={handleDataFileSelect} fileState={dataFileState} />
+                        <FileDropzone title="1. 顧客契約CSV" acceptedFormats=".csv,.xlsx" onFileSelect={handleContractFileSelect} fileState={contractFileState} />
+                        <FileDropzone title="2. 顧客契約データ" acceptedFormats=".csv,.xlsx" onFileSelect={handleDataFileSelect} fileState={dataFileState} />
                     </div>
 
                     <div className="text-center">
@@ -431,7 +442,7 @@ export default function App() {
                             disabled={!contractFileState.data || !dataFileState.data || isLoading}
                             className="w-full md:w-auto text-lg px-12 h-12"
                         >
-                            {isLoading ? '生成中...' : '生成'}
+                            {isLoading ? 'GACCHANKO中...' : 'GACCHANKO！'}
                         </ActionButton>
                     </div>
                 

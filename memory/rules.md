@@ -40,3 +40,9 @@ This document outlines the core, unchanging rules for the GACCHANKO application.
 *   ファイル入力の id は常に**安全生成**すること（NFKC→スペース `-` 化→英数記号以外除去）。
 *   `accept` は拡張子＋MIME を併記して OS/ブラウザ差を吸収。
 *   既存の入出力仕様・列名・順序は**変更不可**。
+
+## Output Columns (v1.06)
+- 末尾列は固定：販路 / オーソリー結果 / ジライフ安心サポート / Sma-yell / 承認ID
+- 「承認ID」は右ファイル D列 ShouninIDZeus を KeiyakuNO で集約（最初の非空採用）。矛盾はエラーレポート記載
+- 「承認ID」が取得不可または空の場合は固定文字列 'ERROR' を出力
+- 入力 accept は拡張子のみ（.csv,.xlsx）。MIMEは使用しない
